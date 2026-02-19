@@ -14,7 +14,8 @@ class EmailPayload(BaseModel):
     sender: str
     subject: str
     body: str
-    auth_results: Optional[str] = "pass" # Default to "pass" for simplicity
+    auth_results: Optional[str] = "pass"
+    attachments: Optional[List[dict]] = []
     domains: Optional[List[str]] = []
     hashes: Optional[List[str]] = []
 
