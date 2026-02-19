@@ -36,12 +36,17 @@ async def analyze_brand_impersonation(sender_email: str) -> dict:
 
 async def analyze_urls_advanced(body: str) -> dict:
     """
-    Scans the email body for URLs and analyzes them for phishing indicators.
+    Comprehensive URL analysis engine. Detects phishing indicators including:
+    - High-risk TLDs
+    - IP-based destinations
+    - Punycode (Homograph attacks)
+    - URL Shorteners
+    - Obfuscation techniques (Long URLs, excessive subdomains, '@' usage)
     """
     score = 0
     reasons = []
     
-    # Extract URLs using Regex
+    # Regex to extract URLs (handles http, https, and www)
     url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
     urls = re.findall(url_pattern, body)
     
@@ -50,30 +55,57 @@ async def analyze_urls_advanced(body: str) -> dict:
         
     for url in urls:
         url_lower = url.lower()
+        # Extract components safely (e.g., domain, suffix, subdomain)
         ext = tldextract.extract(url_lower)
+        full_domain = f"{ext.domain}.{ext.suffix}"
         
-        # A. Check for suspicious/malicious TLDs
-        malicious_tlds = ["xyz", "top", "click", "pw", "link", "zip", "tk"]
+        # 1. High-Risk TLD Check
+        malicious_tlds = ["xyz", "top", "click", "pw", "link", "zip", "tk", "date", "cc"]
         if ext.suffix in malicious_tlds:
             score += 30
             reasons.append(f"Suspicious URL: Link leads to a high-risk TLD (.{ext.suffix}).")
 
-        # B. Detect IP-based URLs (Common in phishing to bypass domain blacklists)
+        # 2. Direct IP Address Detection
+        # Attackers use IPs to bypass domain-based reputation filters
         if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', ext.domain):
             score += 50
-            reasons.append("Critical: URL uses a raw IP address instead of a domain name.")
+            reasons.append(f"Critical: URL uses a raw IP address ({ext.domain}) instead of a domain name.")
             
-        # C. Detect Homograph Attacks (Punycode)
+        # 3. Homograph Attack Detection (Punycode)
+        # Using lookalike characters (e.g., 'xn--' prefix)
         if "xn--" in url_lower:
-            score += 60
-            reasons.append("Danger: Punycode detected (Possible lookalike domain attack).")
+            score += 65
+            reasons.append("Danger: Punycode detected (Possible Homograph/lookalike domain attack).")
             
-        # D. Detect URL Shorteners
-        shorteners = ["bit.ly", "t.co", "tinyurl.com", "is.gd"]
+        # 4. URL Shortener Detection
+        shorteners = ["bit.ly", "t.co", "tinyurl.com", "is.gd", "buff.ly", "rebrand.ly"]
         if any(s in url_lower for s in shorteners):
             score += 20
-            reasons.append("Warning: Email contains a shortened URL to hide the final destination.")
+            reasons.append("Warning: Email contains a shortened URL used to mask the final destination.")
 
+        # --- ADVANCED EDGE CASES (Obfuscation) ---
+
+        # 5. URL Length Analysis
+        # Phishing URLs are often extremely long to hide the actual domain from the user's view
+        if len(url) > 150:
+            score += 20
+            reasons.append("Warning: URL is suspiciously long (common obfuscation tactic).")
+
+        # 6. Excessive Subdomains
+        # e.g., 'paypal.com.secure.login.update.account-verify.net'
+        if url.count('.') > 4:
+            score += 25
+            reasons.append("Suspicious: URL contains an excessive number of subdomains.")
+
+        # 7. Misleading '@' Symbol
+        # Browsers sometimes ignore everything before the '@' in a URL
+        # e.g., 'https://www.google.com@malicious-site.com'
+        path_part = url_lower.split("//")[-1] if "//" in url_lower else url_lower
+        if "@" in path_part:
+            score += 45
+            reasons.append("Critical: URL contains '@' symbol, a technique used to mislead users about the destination.")
+
+    # Cap the score for this specific module at 100
     return {"score": min(score, 100), "reasons": reasons}
 
 
@@ -139,40 +171,58 @@ async def analyze_content_heuristics(subject: str, body: str) -> dict:
 
 async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs) -> dict:
     """
-    Orchestrates all specialized security engines concurrently.
+    The central orchestrator of the security engine. 
+    It runs all analysis modules in parallel (Concurrency) and aggregates 
+    the final risk score and verdict based on multiple security vectors.
     """
+    # Extracting data from the payload (with safe defaults)
     sender = email_data.get("sender", "")
     subject = email_data.get("subject", "")
     body = email_data.get("body", "")
+    attachments = email_data.get("attachments", [])
     
-    # Run all analysis tasks in parallel for performance
+    # Defining the concurrent analysis tasks
+    # Using asyncio.gather allows us to run these without waiting for each other,
+    # significantly reducing the latency for the Gmail Add-on user.
     tasks = [
-        analyze_sender_trust(email_data, db_cursor),
-        analyze_content_heuristics(subject, body),
-        analyze_brand_impersonation(sender),
-        analyze_urls_advanced(body)
+        analyze_sender_trust(email_data, db_cursor),      # DB & Auth (SPF/DKIM)
+        analyze_content_heuristics(subject, body),        # Textual patterns
+        analyze_brand_impersonation(sender),             # Typosquatting/Fuzzy Matching
+        analyze_urls_advanced(body),                      # Malicious links/IPs/Punycode
+        analyze_attachments(attachments)                  # Malicious file extensions/Tactic detection
     ]
     
+    # Executing all security engines in parallel
     results = await asyncio.gather(*tasks)
     
-    # Aggregate results and cap the total score
-    total_score = sum(res["score"] for res in results)
-    total_score = min(total_score, 100)
-    
+    # Initializing aggregation variables
+    total_score = 0
     risk_factors = []
+    
+    # Aggregating results from all engines
     for res in results:
+        total_score += res["score"]
         risk_factors.extend(res["reasons"])
     
-    # Final Verdict Logic
+    # Normalizing the score: Even if multiple engines find threats, 
+    # the maximum risk is capped at 100%.
+    total_score = min(total_score, 100)
+    
+    # Verdict Logic: Mapping the numerical score to a human-readable verdict.
+    # High Score (>= 75): Definite threat detected.
+    # Mid Score (>= 35): Suspicious activity, requires user caution.
+    # Low Score (< 35): Likely safe.
     if total_score >= 75:
         verdict = "Malicious"
     elif total_score >= 35:
         verdict = "Suspicious"
     else:
         verdict = "Safe"
+        # Providing feedback for safe emails to improve User Experience (UX)
         if not risk_factors:
-            risk_factors = ["No threats detected by the security engines."]
+            risk_factors = ["All heuristic and technical security checks passed."]
 
+    # Return the structured response required by the API
     return {
         "score": total_score,
         "verdict": verdict,
