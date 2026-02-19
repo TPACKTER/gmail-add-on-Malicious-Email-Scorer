@@ -254,12 +254,13 @@ async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs
         analyze_urls_advanced(body),
         analyze_attachments(attachments),
         detect_html_smuggling(body),
-        check_domain_reputation(sender)
+        check_domain_reputation(sender),
+        validate_arc_chain(email_data)
     ]
     
     results = await asyncio.gather(*tasks)
     
-    total_score = min(sum(res["score"] for res in results), 100)
+    total_score = max(0,min(sum(res["score"] for res in results), 100))
     risk_factors = [reason for res in results for reason in res["reasons"]]
     
     if total_score >= 75:
@@ -276,3 +277,29 @@ async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs
         "verdict": verdict,
         "risk_factors": risk_factors
     }
+
+async def validate_arc_chain(email_data: dict) -> dict:
+    """
+    Advanced ARC Validation:
+    Grants a full 'Trust Discount' only if the ARC chain is verified 
+    by a reputable provider (e.g., Google, Microsoft).
+    """
+    score = 0
+    reasons = []
+    arc_results = email_data.get("arc_results", "").lower()
+    auth_results = email_data.get("auth_results", "").lower()
+    
+    # List of high-reputation sealers
+    trusted_sealers = ["google.com", "microsoft.com", "amazonses.com", "apple.com"]
+    
+    # Logic: Standard auth failed, but ARC passed
+    if "fail" in auth_results and "arc=pass" in arc_results:
+        # Check if the 'pass' comes from a source we actually trust
+        if any(sealer in arc_results for sealer in trusted_sealers):
+            score -= 60  # High confidence: Trust the forwarder
+            reasons.append("ARC Validation: Forwarding integrity confirmed by a trusted provider.")
+        else:
+            score -= 15  # Low confidence: The chain passed, but the source is unknown
+            reasons.append("ARC Warning: Chain passed but was sealed by an untrusted or unknown source.")
+    
+    return {"score": score, "reasons": reasons}

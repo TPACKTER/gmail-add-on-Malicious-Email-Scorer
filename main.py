@@ -103,3 +103,16 @@ async def get_blacklist():
     emails = [row[0] for row in cursor.fetchall()]
     conn.close()
     return {"blacklisted_emails": emails}
+
+async def test_arc_prevents_false_positive():
+    forwarded_email = {
+        "sender": "newsletter@trusted-source.com",
+        "subject": "Weekly Update",
+        "body": "Here is your news.",
+        "auth_results": "dkim=fail",
+        "arc_results": "arc=pass (google.com)", # <--- Added 'google.com' here
+        "attachments": []
+    }
+    
+    result = await calculate_risk_score(forwarded_email)
+    assert result["verdict"] == "Safe"
