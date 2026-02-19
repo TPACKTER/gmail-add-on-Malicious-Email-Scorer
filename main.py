@@ -2,7 +2,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import database
-import scoring_engine  # This imports the engine we just talked about
+
+# 1. THE CHANGE: We force Python to find the exact function right now
+from scoring_engine import calculate_risk_score 
 
 app = FastAPI(title="Malicious Email Scorer API")
 
@@ -31,18 +33,16 @@ async def analyze_email(email: EmailPayload):
     cursor = conn.cursor()
     
     try:
-        # 1. Fire up the asynchronous scoring engine
-        # We pass the email data as a dictionary so the engine can process it
-        result = await scoring_engine.calculate_risk_score(email.dict(), cursor)
+        # 2. THE CHANGE: We call the function directly now
+        result = await calculate_risk_score(email.dict(), cursor)
         
-        # 2. Save the result to the History table 
+        # Save the result to the History table 
         cursor.execute(
             "INSERT INTO scan_history (sender, subject, score, verdict) VALUES (?, ?, ?, ?)", 
             (email.sender, email.subject, result["score"], result["verdict"])
         )
         conn.commit()
         
-        # 3. Return the exact reasons and score back to Gmail [cite: 17]
         return ScanResult(**result)
         
     except Exception as e:
