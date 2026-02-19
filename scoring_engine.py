@@ -1,108 +1,112 @@
 import asyncio
-# import httpx  # We will use this later for async API calls to VirusTotal/LLMs
 
-# --- 1. INDIVIDUAL WORKERS (The Signals) ---
+# --- SENDER TRUST ANALYSIS ---
 
-async def check_blacklist(sender_email: str, cursor) -> dict:
-    """Checks the SQLite database to see if the user blocked this sender."""
-    # SAFETY CHECK: If no database is connected yet, skip this test
-    if cursor is None:
-        return {"score": 0, "reason": None}
-        
-    # In a real app, this runs a SQL query...
-    cursor.execute("SELECT email FROM blacklist WHERE email=?", (sender_email,))
-    is_blacklisted = cursor.fetchone() is not None
-    
-    if is_blacklisted:
-        return {"score": 100, "reason": f"Sender {sender_email} is on your custom blacklist."}
-    return {"score": 0, "reason": None}
-
-async def analyze_heuristics(subject: str, body: str) -> dict:
-    """Fast, rule-based static analysis for urgency and phishing keywords."""
+async def analyze_sender_trust(email_data: dict, cursor) -> dict:
+    """
+    Analyzes sender identity based on technical reputation, 
+    database blacklists, and protocol authentication (SPF/DKIM).
+    """
     score = 0
     reasons = []
-    urgent_keywords = ["urgent", "password reset", "invoice attached", "immediate action"]
     
-    subject_lower = subject.lower()
-    for word in urgent_keywords:
-        if word in subject_lower:
-            score += 20
-            reasons.append(f"Subject contains highly suspicious keyword: '{word}'")
-            break # Only penalize once for subject
-            
-    return {"score": score, "reasons": reasons}
-
-async def check_virustotal(domains: list, attachment_hashes: list) -> dict:
-    """Dynamic Enrichment via External APIs."""
-    # TODO: Implement actual httpx call to VirusTotal API here
-    await asyncio.sleep(0.1) # Simulate network delay
+    sender = email_data.get("sender", "").lower()
+    auth_results = email_data.get("auth_results", "pass").lower()
     
-    # Mock response
-    if "suspicious-link.com" in domains:
-        return {"score": 50, "reasons": ["A domain in this email is flagged by VirusTotal."]}
-    return {"score": 0, "reasons": []}
+    # 1. Email Authentication Verification (SPF/DKIM/DMARC)
+    # These results are typically extracted from the 'Authentication-Results' header
+    if "fail" in auth_results:
+        score += 85  # High risk: Identity spoofing detected
+        reasons.append("Critical: Sender authentication failed (SPF/DKIM). Potential spoofing.")
+    elif "softfail" in auth_results:
+        score += 40
+        reasons.append("Warning: Inconsistent sender authentication (SPF Softfail).")
 
-async def analyze_text_with_ai(body: str) -> dict:
-    """Uses an LLM to detect social engineering context."""
-    # TODO: Implement API call to OpenAI/HuggingFace here
-    await asyncio.sleep(0.2) # Simulate AI processing time
-    
-    # Mock response
-    return {"score": 10, "reasons": ["AI analysis detected mild urgency in the email body."]}
+    # 2. Personal Blacklist Verification
+    if cursor:
+        cursor.execute("SELECT email FROM blacklist WHERE email=?", (sender,))
+        if cursor.fetchone():
+            # Immediate high risk for manually blacklisted entities
+            return {"score": 100, "reasons": [f"Sender {sender} is in your personal blacklist."]}
+
+    # 3. Domain Reputation Analysis
+    # Identifying high-risk Top-Level Domains (TLDs) frequently used in phishing
+    suspicious_tlds = [".xyz", ".tk", ".top", ".info", ".click", ".loan"]
+    if any(sender.endswith(tld) for tld in suspicious_tlds):
+        score += 30
+        reasons.append(f"Sender is using a high-risk domain extension ({sender.split('.')[-1]}).")
+
+    return {"score": min(score, 100), "reasons": reasons}
 
 
-# --- 2. THE ORCHESTRATOR (The Aggregator) ---
+# --- CONTENT HEURISTICS ENGINE ---
 
-    async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs) -> dict:    """
-    Combines all signals into a single risk score mapped to a clear verdict.
+async def analyze_content_heuristics(subject: str, body: str) -> dict:
     """
-    # 1. Fire all workers concurrently!
-    blacklist_task = check_blacklist(email_data["sender"], db_cursor)
-    heuristics_task = analyze_heuristics(email_data["subject"], email_data["body"])
-    virustotal_task = check_virustotal(email_data.get("domains", []), email_data.get("hashes", []))
-    ai_task = analyze_text_with_ai(email_data["body"])
+    Performs static analysis on the email's text to detect 
+    social engineering patterns and phishing indicators.
+    """
+    score = 0
+    reasons = []
+    full_text = f"{subject} {body}".lower()
     
-    # Wait for all of them to finish at the same time
-    results = await asyncio.gather(blacklist_task, heuristics_task, virustotal_task, ai_task)
-    blacklist_res, heuristics_res, vt_res, ai_res = results
+    # Trigger words related to urgency and psychological manipulation
+    urgency_map = {
+        "urgent": 15, "immediate action": 20, "suspended": 25, 
+        "verify your account": 25, "action required": 15, "unauthorized access": 20
+    }
+    for trigger, weight in urgency_map.items():
+        if trigger in full_text:
+            score += weight
+            reasons.append(f"Detected urgency trigger: '{trigger}'.")
 
-    # 2. Compile the mathematical score
-    # We use a simple additive model: $Total Score = \sum (Signal_i)$ capped at 100.
-    total_score = 0
-    risk_factors = []
+    # Keywords related to sensitive data and financial fraud
+    sensitive_keywords = ["invoice", "bank account", "password", "login", "wire transfer", "payment"]
+    for word in sensitive_keywords:
+        if word in full_text:
+            score += 15
+            reasons.append(f"Sensitive keyword detected: '{word}'.")
 
-    # If blacklisted, it's an immediate 100. Override everything else.
-    if blacklist_res["score"] == 100:
-        return {
-            "score": 100,
-            "verdict": "Malicious",
-            "risk_factors": [blacklist_res["reason"]]
-        }
+    # Structural and formatting anomalies
+    if subject and subject.isupper() and len(subject) > 5:
+        score += 20
+        reasons.append("Aggressive formatting (Subject line in ALL CAPS).")
+        
+    if "!!!" in full_text:
+        score += 10
+        reasons.append("Excessive use of exclamation marks (Panic inducement).")
 
-    # Otherwise, tally up the scores and explanations
-    total_score += heuristics_res["score"]
-    risk_factors.extend(heuristics_res["reasons"])
+    return {"score": min(score, 100), "reasons": reasons}
+
+
+# --- THE ORCHESTRATOR ---
+
+async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs) -> dict:
+    """
+    Coordinates the scanning process by running analysis modules 
+    concurrently and aggregating the final risk assessment.
+    """
+    # Execute analysis tasks in parallel for optimal performance (Concurrency)
+    trust_task = analyze_sender_trust(email_data, db_cursor)
+    content_task = analyze_content_heuristics(email_data.get("subject", ""), email_data.get("body", ""))
     
-    total_score += vt_res["score"]
-    risk_factors.extend(vt_res["reasons"])
+    results = await asyncio.gather(trust_task, content_task)
+    trust_res, content_res = results
+
+    # Score aggregation and limit capping
+    total_score = min(trust_res["score"] + content_res["score"], 100)
+    risk_factors = trust_res["reasons"] + content_res["reasons"]
     
-    total_score += ai_res["score"]
-    risk_factors.extend(ai_res["reasons"])
-
-    # Cap at 100
-    total_score = min(total_score, 100)
-
-    # 3. Determine Verdict based on Score
-    if total_score >= 70:
+    # Categorize verdict based on the total score
+    if total_score >= 75:
         verdict = "Malicious"
-    elif total_score >= 30:
+    elif total_score >= 35:
         verdict = "Suspicious"
     else:
         verdict = "Safe"
         if not risk_factors:
-            risk_factors = ["All security checks passed. No threats detected."]
+            risk_factors = ["All security heuristics passed. No threats detected."]
 
-    # Return the clean, explainable JSON
     return {
         "score": total_score,
         "verdict": verdict,
