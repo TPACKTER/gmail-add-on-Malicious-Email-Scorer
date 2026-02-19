@@ -20,23 +20,47 @@ def normalize_text(text: str) -> str:
 
 async def analyze_brand_impersonation(sender_email: str) -> dict:
     """
-    Detects if the sender domain is a 'lookalike' of a trusted brand.
-    Uses Fuzzy String Matching to identify Typosquatting.
+    Robust Brand Protection Engine:
+    1. Normalizes lookalike characters (0 -> o, 1 -> l).
+    2. Splits hyphenated domains to check individual parts.
+    3. Uses Fuzzy Matching to detect typosquatting (e.g., 'mircosoft').
+    4. Detects unauthorized brand usage in multi-part domains (e.g., 'google-support').
     """
     score = 0
     reasons = []
+    
+    # Extract the domain part (e.g., 'g00gle-alert' from 'security@g00gle-alert.com')
     extracted = tldextract.extract(sender_email.lower())
     domain = extracted.domain
     
     trusted_brands = ["google", "microsoft", "netflix", "paypal", "apple", "amazon", "facebook", "upwind"]
     
+    # --- STEP 1: Homoglyph Mitigation ---
+    # Attackers replace 'o' with '0' or 'l' with '1'. We normalize these before checking.
+    normalized_domain = domain.replace('0', 'o').replace('1', 'l').replace('5', 's').replace('4', 'a')
+    
+    # --- STEP 2: Handle Multi-part Domains ---
+    # Split by hyphens to analyze parts like 'google' and 'alert' separately
+    parts = normalized_domain.split('-')
+    
     for brand in trusted_brands:
-        similarity = fuzz.ratio(domain, brand)
-        if 80 <= similarity < 100:
-            score += 65
-            reasons.append(f"Brand Impersonation: Domain '{domain}' is suspiciously similar to '{brand}'.")
-            break 
+        for part in parts:
+            # A. Fuzzy Matching: Catch typosquatting within the part (e.g., 'mircosoft')
+            similarity = fuzz.ratio(part, brand)
             
+            # If it's very similar but NOT an exact match
+            if 80 <= similarity < 100:
+                score += 65
+                reasons.append(f"Brand Impersonation: Domain part '{part}' is suspiciously similar to the trusted brand '{brand}'.")
+                return {"score": score, "reasons": reasons}
+
+            # B. Exact Match in Suspicious Context: 
+            # Catch 'google-support' (where 'google' is exact but the domain is complex)
+            if part == brand and len(parts) > 1:
+                score += 60
+                reasons.append(f"Brand Impersonation: Trusted brand '{brand}' used within a suspicious multi-part domain.")
+                return {"score": score, "reasons": reasons}
+
     return {"score": score, "reasons": reasons}
 
 
