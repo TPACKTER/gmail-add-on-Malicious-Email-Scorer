@@ -9,7 +9,7 @@ app = FastAPI(title="Malicious Email Scorer API")
 # Initialize the database tables on server startup
 database.init_db()
 
-# --- 1. DATA MODELS ---
+# --- DATA MODELS ---
 class EmailPayload(BaseModel):
     sender: str
     subject: str
@@ -27,7 +27,7 @@ class ScanResult(BaseModel):
 class BlacklistEntry(BaseModel):
     email: str
 
-# --- 2. ENDPOINTS ---
+# --- ENDPOINTS ---
 
 @app.post("/api/v1/analyze", response_model=ScanResult)
 async def analyze_email(email: EmailPayload):
@@ -41,18 +41,18 @@ async def analyze_email(email: EmailPayload):
     cursor = conn.cursor()
     
     try:
-        # 1. Fire the asynchronous scoring engine
+        # Fire the asynchronous scoring engine
         # We pass the email data and the database cursor for blacklist lookups
         result = await calculate_risk_score(email.dict(), cursor)
         
-        # 2. Log the scan results into the history table
+        # Log the scan results into the history table
         cursor.execute(
             "INSERT INTO scan_history (sender, subject, score, verdict) VALUES (?, ?, ?, ?)", 
             (email.sender, email.subject, result["score"], result["verdict"])
         )
         conn.commit()
         
-        # 3. Return the structured result to the Gmail Add-on
+        # Return the structured result to the Gmail Add-on
         return ScanResult(**result)
         
     except Exception as e:
@@ -110,7 +110,7 @@ async def test_arc_prevents_false_positive():
         "subject": "Weekly Update",
         "body": "Here is your news.",
         "auth_results": "dkim=fail",
-        "arc_results": "arc=pass (google.com)", # <--- Added 'google.com' here
+        "arc_results": "arc=pass (google.com)",
         "attachments": []
     }
     

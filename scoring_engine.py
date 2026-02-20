@@ -26,7 +26,6 @@ api_key = os.getenv("YOUR_API_KEY")
 client = genai.Client(api_key=api_key)
 
 # --- 1. UTILS & EVASION MITIGATION ---
-
 def normalize_text(text: str) -> str:
     """
     Cleans text from invisible Unicode characters (Zero-Width Space/Joiners)
@@ -39,7 +38,6 @@ def normalize_text(text: str) -> str:
 
 
 # --- 2. SPECIALIZED SECURITY ENGINES ---
-
 async def analyze_brand_impersonation(sender_email: str) -> dict:
     """
     Robust Brand Protection Engine:
@@ -57,17 +55,17 @@ async def analyze_brand_impersonation(sender_email: str) -> dict:
     
     trusted_brands = ["google", "microsoft", "netflix", "paypal", "apple", "amazon", "facebook", "upwind"]
     
-    # --- STEP 1: Homoglyph Mitigation ---
+    # --- Homoglyph Mitigation ---
     # Attackers replace 'o' with '0' or 'l' with '1'. We normalize these before checking.
     normalized_domain = domain.replace('0', 'o').replace('1', 'l').replace('5', 's').replace('4', 'a')
     
-    # --- STEP 2: Handle Multi-part Domains ---
-    # Split by hyphens to analyze parts like 'google' and 'alert' separately
+    # --- Handle Multi-part Domains ---
+    # Split by hyphens to analyze parts separately
     parts = normalized_domain.split('-')
     
     for brand in trusted_brands:
         for part in parts:
-            # A. Fuzzy Matching: Catch typosquatting within the part (e.g., 'mircosoft')
+            # Fuzzy Matching: Catch typosquatting within the part 
             similarity = fuzz.ratio(part, brand)
             
             # If it's very similar but NOT an exact match
@@ -76,8 +74,7 @@ async def analyze_brand_impersonation(sender_email: str) -> dict:
                 reasons.append(f"Brand Impersonation: Domain part '{part}' is suspiciously similar to the trusted brand '{brand}'.")
                 return {"score": score, "reasons": reasons}
 
-            # B. Exact Match in Suspicious Context: 
-            # Catch 'google-support' (where 'google' is exact but the domain is complex)
+            # Exact Match in Suspicious Context: 
             if part == brand and len(parts) > 1:
                 score += 60
                 reasons.append(f"Brand Impersonation: Trusted brand '{brand}' used within a suspicious multi-part domain.")
@@ -194,10 +191,10 @@ async def analyze_content_heuristics(subject: str, body: str) -> dict:
     score = 0
     reasons = []
     
-    # STEP 1: Normalize text to defeat Zero-Width/Invisible character attacks
+    # Normalize text to defeat Zero-Width/Invisible character attacks
     clean_text = normalize_text(f"{subject} {body}").lower()
     
-    # STEP 2: Urgency & Psychological Triggers
+    # Urgency & Psychological Triggers
     urgency_map = {
         "urgent": 20, 
         "immediate action": 25, 
@@ -211,7 +208,7 @@ async def analyze_content_heuristics(subject: str, body: str) -> dict:
             score += weight
             reasons.append(f"Content Alert: Found urgency trigger '{trigger}'.")
 
-    # STEP 3: Detailed Financial & Sensitive Keywords (The missing part!)
+    # Detailed Financial & Sensitive Keywords
     financial_keywords = {
         "invoice": 15,
         "payment declined": 25,
@@ -230,7 +227,7 @@ async def analyze_content_heuristics(subject: str, body: str) -> dict:
             score += weight
             reasons.append(f"Financial Risk: Found sensitive keyword '{word}'.")
 
-    # STEP 4: Structural anomalies
+    #Structural anomalies
     if subject and subject.isupper() and len(subject) > 5:
         score += 20
         reasons.append("Formatting Alert: Subject line in ALL CAPS (Aggressive behavior).")
@@ -260,7 +257,7 @@ async def analyze_attachments(attachments: list) -> dict:
     return {"score": min(score, 100), "reasons": reasons}
 
 
-# --- 3. THE ORCHESTRATOR ---
+# --- THE ORCHESTRATOR ---
 
 async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs) -> dict:
     sender = email_data.get("sender", "")
@@ -281,18 +278,26 @@ async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs
     ]
     
     results = await asyncio.gather(*tasks)
-    initial_score = sum(res["score"] for res in results)
-    
-    # Second Opinion from AI if the score is suspicious (30-65) 
-    # OR if it's a very short email (hard for heuristics to judge)
-    if 30 <= initial_score <= 65:
-        ai_result = await analyze_with_llm(email_data['subject'], email_data['body'])
-        results.append(ai_result)
-        
-    
-    total_score = max(0,min(sum(res["score"] for res in results), 100))
+    heuristic_score = sum(res["score"] for res in results)
     risk_factors = [reason for res in results for reason in res["reasons"]]
     
+    ai_score = 0  
+
+    # Second Opinion from AI if the score is suspicious (30-65) 
+    # OR if it's a very short email (hard for heuristics to judge)
+    if 30 <= heuristic_score <= 65 or len(body) < 50:
+        ai_result = await analyze_with_llm(subject, body)
+        ai_score = ai_result.get("score", 0)
+        if ai_result.get("reasons"):
+            risk_factors.extend(ai_result["reasons"])
+    
+    if ai_score > 0:
+        total_score = (heuristic_score * 0.4) + (ai_score * 0.6)
+    else:
+        total_score = heuristic_score
+
+    total_score = max(0, min(total_score, 100))
+
     if total_score >= 75:
         verdict = "Malicious"
     elif total_score >= 35:
@@ -302,8 +307,10 @@ async def calculate_risk_score(email_data: dict, db_cursor=None, *args, **kwargs
         if not risk_factors:
             risk_factors = ["All security heuristics passed."]
 
+    risk_factors = list(dict.fromkeys(risk_factors))
+
     return {
-        "score": total_score,
+        "score": round(total_score),
         "verdict": verdict,
         "risk_factors": risk_factors
     }
@@ -342,7 +349,6 @@ async def analyze_with_llm(subject: str, body: str) -> dict:
     score = 0
     reasons = []
     
-    # Get API key from environment
     api_key = os.getenv("YOUR_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"    
     prompt = (
@@ -363,7 +369,6 @@ async def analyze_with_llm(subject: str, body: str) -> dict:
     }
     
     try:
-        # We use verify=False here - this is the 'Magic' that bypasses your SSL error
         response = requests.post(url, json=payload, verify=False, timeout=10)
         response.raise_for_status()
         

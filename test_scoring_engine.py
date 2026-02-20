@@ -99,7 +99,7 @@ async def test_arc_prevents_false_positive():
         "subject": "Weekly Update",
         "body": "Here is your news content.",
         "auth_results": "dkim=fail",
-        "arc_results": "arc=pass (sealed by microsoft.com)", # Added trusted sealer
+        "arc_results": "arc=pass (sealed by microsoft.com)", 
         "attachments": []
     }
     
