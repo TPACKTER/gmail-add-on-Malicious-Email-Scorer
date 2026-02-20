@@ -164,6 +164,19 @@ async def check_domain_reputation(sender_email: str) -> dict:
         reasons.append(f"Domain Reputation: Sender domain '{domain}' looks like a temporary burner domain.")
     return {"score": score, "reasons": reasons}
 
+def check_user_blacklist(sender_email):
+    """
+    Requirement: User-Managed Blacklist (Source 18)
+    Checks if the user manually blocked this sender.
+    """
+    try:
+        with open("user_blacklist.txt", "r") as f:
+            blacklist = [line.strip().lower() for line in f.readlines()]
+        if sender_email.lower() in blacklist:
+            return {"score": 100, "reasons": ["Manual Block: Sender is in your personal blacklist."]}
+    except FileNotFoundError:
+        pass
+    return {"score": 0, "reasons": []}
 
 async def analyze_sender_trust(email_data: dict, cursor) -> dict:
     score = 0

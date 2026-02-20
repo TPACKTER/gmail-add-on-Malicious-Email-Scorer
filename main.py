@@ -62,6 +62,15 @@ async def analyze_email(email: EmailPayload):
         # Ensure the database connection is always closed
         conn.close()
 
+@app.post("/api/v1/blacklist/add")
+async def add_to_blacklist(email: str):
+    """
+    Simulates the 'Management Console' action of blocking a sender. 
+    """
+    with open("user_blacklist.txt", "a") as f:
+        f.write(f"\n{email.lower()}")
+    return {"message": f"Sender {email} blocked successfully."}
+
 @app.get("/")
 def health_check():
     return {"status": "The Threat Engine is Online."}
@@ -116,3 +125,5 @@ async def test_arc_prevents_false_positive():
     
     result = await calculate_risk_score(forwarded_email)
     assert result["verdict"] == "Safe"
+
+    
